@@ -1,6 +1,6 @@
 """
-Standalone Hand Tracking Module
-High-accuracy hand and finger joint tracking with advanced features
+Standalone Hand Tracking Module with Real ASL Recognition
+High-accuracy hand and finger joint tracking with trained ASL classifier
 """
 
 import cv2
@@ -9,6 +9,7 @@ import json
 import time
 from collections import deque
 import os
+import joblib
 
 # Check for MediaPipe availability
 try:
@@ -20,16 +21,18 @@ except ImportError:
 
 
 class HandTracker:
-    """Advanced hand tracking with finger joint detection and angle analysis"""
+    """Advanced hand tracking with finger joint detection and real ASL recognition"""
     
     def __init__(self, 
                  max_hands=2,
                  detection_confidence=0.8,
                  tracking_confidence=0.7,
                  enable_smoothing=True,
-                 enable_angle_analysis=True):
+                 enable_angle_analysis=True,
+                 model_path='model.pkl',
+                 scaler_path='scaler.pkl'):
         """
-        Initialize hand tracker
+        Initialize hand tracker with ASL recognition
         
         Args:
             max_hands: Maximum number of hands to detect (1-2)
@@ -37,12 +40,33 @@ class HandTracker:
             tracking_confidence: Minimum confidence for hand tracking (0.0-1.0)
             enable_smoothing: Enable temporal smoothing for stable tracking
             enable_angle_analysis: Enable detailed finger angle calculations
+            model_path: Path to trained ASL classifier model
+            scaler_path: Path to feature scaler
         """
         self.max_hands = max_hands
         self.detection_confidence = detection_confidence
         self.tracking_confidence = tracking_confidence
         self.enable_smoothing = enable_smoothing
         self.enable_angle_analysis = enable_angle_analysis
+        
+        # Load trained ASL model
+        self.asl_model = None
+        self.asl_scaler = None
+        self.asl_enabled = False
+        
+        if os.path.exists(model_path) and os.path.exists(scaler_path):
+            try:
+                self.asl_model = joblib.load(model_path)
+                self.asl_scaler = joblib.load(scaler_path)
+                self.asl_enabled = True
+                print(f"✓ ASL Recognition Model loaded from {model_path}")
+            except Exception as e:
+                print(f"Warning: Could not load ASL model: {e}")
+                print("Continuing with hand tracking only (no ASL recognition)")
+        else:
+            print("Warning: ASL model files not found. Hand tracking only.")
+            print(f"Expected: {model_path} and {scaler_path}")
+            print("Run 'python data_loader_and_training.py' to train a model first.")
         
         # Initialize MediaPipe Hands
         if MEDIAPIPE_AVAILABLE:
@@ -71,6 +95,11 @@ class HandTracker:
         # Finger analysis
         self.finger_states = {'thumb': False, 'index': False, 'middle': False, 'ring': False, 'pinky': False}
         self.finger_angles = {}
+        
+        # ASL Recognition state
+        self.current_asl_prediction = "No gesture"
+        self.asl_confidence = 0.0
+        self.prediction_history = deque(maxlen=5)  # Smooth predictions over 5 frames
         
         # Performance metrics
         self.fps_history = deque(maxlen=30)
@@ -156,9 +185,15 @@ class HandTracker:
             # Analyze finger states
             self._analyze_fingers(landmarks_2d)
             
+            # Predict ASL gesture if model is available
+            if self.asl_enabled and landmarks_3d:
+                self._predict_asl_gesture(landmarks_3d)
+            
         else:
             self.hand_present = False
             self.current_landmarks = None
+            self.current_asl_prediction = "No gesture"
+            self.asl_confidence = 0.0
         
         # Update FPS
         self._update_fps()
@@ -239,6 +274,57 @@ class HandTracker:
                     })
                 
                 self.finger_angles[finger_name] = joint_angles
+    
+    def _predict_asl_gesture(self, landmarks_3d):
+        """Predict ASL gesture from 3D landmarks using trained model"""
+        if not self.asl_enabled or len(landmarks_3d) != 21:
+            return
+        
+        try:
+            # Convert landmarks to feature vector (63 features: 21 landmarks × 3 coords)
+            features = []
+            for landmark in landmarks_3d:
+                features.extend(landmark)  # [x, y, z]
+            
+            # Reshape for model input
+            features_array = np.array(features).reshape(1, -1)
+            
+            # Scale features
+            features_scaled = self.asl_scaler.transform(features_array)
+            
+            # Predict
+            prediction = self.asl_model.predict(features_scaled)[0]
+            
+            # Get confidence if available
+            if hasattr(self.asl_model, 'predict_proba'):
+                probabilities = self.asl_model.predict_proba(features_scaled)[0]
+                pred_idx = list(self.asl_model.classes_).index(prediction)
+                confidence = probabilities[pred_idx]
+            else:
+                confidence = 0.75  # Default confidence for models without probability
+            
+            # Add to prediction history for smoothing
+            self.prediction_history.append((prediction, confidence))
+            
+            # Use majority voting for stable prediction
+            if len(self.prediction_history) >= 3:
+                from collections import Counter
+                recent_preds = [p[0] for p in self.prediction_history]
+                most_common = Counter(recent_preds).most_common(1)[0][0]
+                avg_confidence = sum(p[1] for p in self.prediction_history) / len(self.prediction_history)
+                
+                # Only update if confidence is reasonable
+                if avg_confidence > 0.5:
+                    self.current_asl_prediction = most_common
+                    self.asl_confidence = avg_confidence
+            else:
+                self.current_asl_prediction = prediction
+                self.asl_confidence = confidence
+                
+        except Exception as e:
+            print(f"ASL prediction error: {e}")
+            self.current_asl_prediction = "Error"
+            self.asl_confidence = 0.0
     
     def _calculate_angle(self, p1, p2, p3):
         """Calculate angle between three points (in degrees)"""
@@ -328,28 +414,42 @@ class HandTracker:
     def draw_info(self, frame, detailed_angles=True):
         """Draw tracking information overlay with optional detailed joint angles"""
         # Info panel background
-        panel_height = 220 if detailed_angles and self.enable_angle_analysis else 150
+        panel_height = 250 if detailed_angles and self.enable_angle_analysis else 180
         cv2.rectangle(frame, (10, 10), (450, panel_height), (0, 0, 0), -1)
+        
+        # ASL Prediction (real prediction from trained model)
+        if self.hand_present and self.asl_enabled:
+            color = (0, 255, 0) if self.asl_confidence > 0.7 else (0, 165, 255)
+            asl_text = f"ASL: {self.current_asl_prediction}"
+            cv2.putText(frame, asl_text, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            # Confidence
+            conf_text = f"Confidence: {self.asl_confidence:.2f}"
+            cv2.putText(frame, conf_text, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        elif self.hand_present and not self.asl_enabled:
+            cv2.putText(frame, "ASL: Model not loaded", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
         
         # Hand detection status
         status = "HAND DETECTED" if self.hand_present else "NO HAND"
         color = (0, 255, 0) if self.hand_present else (0, 0, 255)
-        cv2.putText(frame, status, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+        y_offset = 85 if (self.hand_present and self.asl_enabled) else 65
+        cv2.putText(frame, status, (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         
         # FPS
         fps = self.get_fps()
-        cv2.putText(frame, f"FPS: {fps:.1f}", (20, 60), 
+        y_offset += 25
+        cv2.putText(frame, f"FPS: {fps:.1f}", (20, y_offset), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # Finger count
         if self.hand_present:
+            y_offset += 25
             finger_count = self.get_finger_count()
-            cv2.putText(frame, f"Fingers Extended: {finger_count}", (20, 85),
+            cv2.putText(frame, f"Fingers Extended: {finger_count}", (20, y_offset),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # Detailed joint angles
             if detailed_angles and self.enable_angle_analysis and self.finger_angles:
-                y_offset = 110
+                y_offset += 25
                 cv2.putText(frame, "Joint Angles (degrees):", (20, y_offset),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
                 y_offset += 20
@@ -364,7 +464,7 @@ class HandTracker:
                     y_offset += 18
             else:
                 # Simple finger states
-                y_offset = 110
+                y_offset += 25
                 for name, extended in self.finger_states.items():
                     state = "UP" if extended else "DOWN"
                     color = (0, 255, 0) if extended else (100, 100, 100)
@@ -525,13 +625,13 @@ class HandTracker:
 
 
 def demo_hand_tracking():
-    """Demo the hand tracking system"""
+    """Demo the hand tracking system with real ASL recognition"""
     print("=" * 60)
-    print("ULTIMATE HAND TRACKING DEMO")
+    print("ULTIMATE HAND TRACKING + ASL RECOGNITION DEMO")
     print("=" * 60)
     print("Features:")
     print("  ✓ 21-point hand landmark detection")
-    print("  ✓ Dual-hand support")
+    print("  ✓ Real ASL gesture recognition (A-Z)")
     print("  ✓ DIP, PIP, MCP joint angle analysis")
     print("  ✓ Real-time FPS monitoring")
     print("  ✓ Export to JSON/CSV/ONNX config")
@@ -543,13 +643,15 @@ def demo_hand_tracking():
     print("  p - Print performance stats")
     print("=" * 60)
     
-    # Initialize tracker with full features
+    # Initialize tracker with full features + ASL model
     tracker = HandTracker(
-        max_hands=2,
+        max_hands=1,  # Use 1 hand for ASL recognition
         detection_confidence=0.8,
         tracking_confidence=0.7,
         enable_smoothing=True,
-        enable_angle_analysis=True
+        enable_angle_analysis=True,
+        model_path='model.pkl',
+        scaler_path='scaler.pkl'
     )
     
     # Initialize webcam
@@ -563,6 +665,12 @@ def demo_hand_tracking():
     
     frame_id = 0
     show_angles = True
+    
+    if tracker.asl_enabled:
+        print("\n✓ ASL Recognition ENABLED - Show ASL gestures (A-Z)")
+    else:
+        print("\n⚠ ASL Recognition DISABLED - Hand tracking only")
+        print("  Run 'python data_loader_and_training.py' to train ASL model first")
     
     print("\nStarting hand tracking... Show your hand to the camera!")
     
