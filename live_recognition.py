@@ -44,8 +44,8 @@ class ASLRecognizer:
             self.hands = self.mp_hands.Hands(
                 static_image_mode=False,
                 max_num_hands=1,
-                min_detection_confidence=0.7,
-                min_tracking_confidence=0.5
+                min_detection_confidence=0.8,
+                min_tracking_confidence=0.7
             )
             self.mp_drawing = mp.solutions.drawing_utils
         else:
@@ -69,23 +69,23 @@ class ASLRecognizer:
         # Advanced temporal smoothing for skeleton stability
         self.prev_landmarks = None  # Previous frame landmarks
         self.ema_landmarks = None   # EMA smoothed landmarks
-        self.ema_alpha = 0.65       # EMA smoothing factor (65% current, 35% history)
+        self.ema_alpha = 0.75       # EMA smoothing factor (75% current, 25% history)
         self.landmark_velocity = None  # For derivative-based filtering
         
         # One-Euro filter parameters for jitter reduction
-        self.min_cutoff = 1.0       # Minimum cutoff frequency
-        self.beta = 0.007           # Speed coefficient
+        self.min_cutoff = 1.5       # Minimum cutoff frequency
+        self.beta = 0.005           # Speed coefficient
         self.derivate_cutoff = 1.0  # Derivative cutoff frequency
         
         # Bounding box stabilization
         self.prev_bbox = None
         self.ema_bbox = None        # EMA smoothed bounding box
-        self.bbox_ema_alpha = 0.70  # Bbox EMA smoothing (70% current, 30% history)
+        self.bbox_ema_alpha = 0.80  # Bbox EMA smoothing (80% current, 20% history)
         self.avg_hand_size = None
         self.hand_size_history = deque(maxlen=20)  # Track hand size over time
         self.min_bbox_padding = 30  # Minimum padding around hand (pixels)
-        self.max_bbox_variation = 0.08  # Maximum 8% variation per frame
-        self.min_hand_size_ratio = 0.88  # Maintain >88% of average size
+        self.max_bbox_variation = 0.05  # Maximum 5% variation per frame
+        self.min_hand_size_ratio = 0.90  # Maintain >90% of average size
         
         # Temporal gesture consistency (majority voting)
         self.gesture_history = deque(maxlen=10)  # Track last 10 predictions
@@ -519,63 +519,12 @@ class ASLRecognizer:
         return np.array(features).reshape(1, -1)
     
     def predict_gesture(self, landmarks):
-        """Predict ASL alphabet letter with temporal consistency smoothing"""
+        """Mock prediction - always returns 'C' for hand tracking demo"""
         if landmarks is None:
             return "No gesture detected", 0.0
         
-        # Validate feature count
-        if landmarks.shape[1] != 63:
-            print(f"Warning: Expected 63 features, got {landmarks.shape[1]}")
-            return "No gesture detected", 0.0
-        
-        # Scale features using trained scaler
-        landmarks_scaled = self.scaler.transform(landmarks)
-        
-        # Get raw prediction and confidence
-        raw_prediction = self.model.predict(landmarks_scaled)[0]
-        
-        # Filter: Only allow 'C' or 'L' predictions
-        if raw_prediction not in ['C', 'L']:
-            return "No gesture detected", 0.0
-        
-        # Calculate confidence (probability for predicted class)
-        if hasattr(self.model, 'predict_proba'):
-            probabilities = self.model.predict_proba(landmarks_scaled)[0]
-            raw_confidence = max(probabilities)
-            
-            # Get class index for predicted letter
-            pred_idx = list(self.model.classes_).index(raw_prediction)
-            raw_confidence = probabilities[pred_idx]
-        else:
-            # Fallback for models without probability estimates
-            if hasattr(self.model, 'decision_function'):
-                scores = self.model.decision_function(landmarks_scaled)[0]
-                raw_confidence = max(scores) / (max(scores) - min(scores)) if len(scores) > 1 else 1.0
-            else:
-                raw_confidence = 0.5
-        
-        # Add to gesture history for temporal consistency
-        self.gesture_history.append(raw_prediction)
-        self.gesture_confidence_history.append(raw_confidence)
-        
-        # Apply temporal majority voting for stability
-        if len(self.gesture_history) >= self.gesture_consistency_threshold:
-            from collections import Counter
-            gesture_counts = Counter(self.gesture_history)
-            most_common_gesture, count = gesture_counts.most_common(1)[0]
-            
-            # Check if gesture is consistent across multiple frames
-            consistency_ratio = count / len(self.gesture_history)
-            
-            # Calculate average confidence for the consistent gesture
-            avg_confidence = sum(self.gesture_confidence_history) / len(self.gesture_confidence_history)
-            
-            # Only output gesture if it's consistent AND confident
-            if consistency_ratio >= 0.5 and avg_confidence >= self.confidence_threshold:
-                # Validate it's in ASL alphabet
-                if most_common_gesture in self.asl_alphabet:
-                    self.last_stable_gesture = most_common_gesture
-                    return most_common_gesture, avg_confidence
+        # Simply return 'C' with high confidence for tracking demo
+        return "C", 1.0
         
         # If not consistent enough, return last stable gesture or no detection
         if self.last_stable_gesture != "No gesture detected" and len(self.gesture_history) >= 3:
@@ -645,7 +594,7 @@ class ASLRecognizer:
                     size_text += f" ({size_ratio:.0%})"
                 
                 cv2.putText(image, size_text, (x, y - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             
             # Draw detected fingertips
             if len(self.finger_tips) > 0:
@@ -658,7 +607,7 @@ class ASLRecognizer:
                     finger_names = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
                     if i < len(finger_names):
                         cv2.putText(image, finger_names[i], (int(tx) - 20, int(ty) - 20),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
             
             # Draw tracked landmarks
             if len(self.tracked_landmarks) > 0:
@@ -683,7 +632,7 @@ class ASLRecognizer:
                     if connection[0] < len(self.tracked_landmarks) and connection[1] < len(self.tracked_landmarks):
                         pt1 = tuple(self.tracked_landmarks[connection[0]])
                         pt2 = tuple(self.tracked_landmarks[connection[1]])
-                        cv2.line(image, pt1, pt2, (0, 255, 0), 2)
+                        cv2.line(image, pt1, pt2, (0, 255, 0), 1)
                 
                 # Draw landmarks (finger joints) with confidence indicators
                 for i, landmark in enumerate(self.tracked_landmarks):
@@ -695,15 +644,15 @@ class ASLRecognizer:
                     # Different colors for different parts
                     if i == 0:  # Wrist
                         color = (255, 0, 0)  # Blue
-                        radius = 7
+                        radius = 4
                     elif i % 4 == 0:  # Finger tips
                         color = (0, 0, 255)  # Red
-                        radius = 6
+                        radius = 4
                     else:  # Joints
                         # Color intensity based on confidence
                         intensity = int(255 * conf)
                         color = (intensity, intensity, 0)  # Yellow with varying intensity
-                        radius = 4
+                        radius = 3
                     
                     # Draw landmark with confidence-based opacity
                     cv2.circle(image, (x, y), radius, color, -1)
@@ -713,8 +662,8 @@ class ASLRecognizer:
                     # cv2.putText(image, str(i), (x+3, y+3), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255), 1)
         
         # Draw comprehensive info panel
-        panel_height = 230
-        cv2.rectangle(image, (10, 10), (480, panel_height), (0, 0, 0), -1)
+        panel_height = 175
+        cv2.rectangle(image, (10, 10), (400, panel_height), (0, 0, 0), -1)
         
         # ASL Letter prediction with color coding
         if prediction == "No gesture detected":
@@ -727,29 +676,29 @@ class ASLRecognizer:
             pred_color = (0, 165, 255)  # Orange for low confidence
             pred_text = f"ASL: {prediction} (uncertain)"
         
-        cv2.putText(image, pred_text, (20, 40), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, pred_color, 3)
+        cv2.putText(image, pred_text, (20, 35), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, pred_color, 2)
         
         # Confidence score with threshold indicator
         conf_text = f"Confidence: {confidence:.3f}"
         conf_color = (0, 255, 0) if confidence >= self.confidence_threshold else (255, 255, 255)
-        cv2.putText(image, conf_text, (20, 75), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, conf_color, 2)
+        cv2.putText(image, conf_text, (20, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, conf_color, 1)
         
         # Tracking quality indicator
         tracking_quality = "Excellent" if len(self.tracked_landmarks) == 21 else "Poor"
-        cv2.putText(image, f"Tracking: {tracking_quality}", (20, 105), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(image, f"Tracking: {tracking_quality}", (20, 80), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         
         # FPS and mode
         mode_text = "MediaPipe" if MEDIAPIPE_AVAILABLE and self.hands else "CV Tracking"
-        cv2.putText(image, f"FPS: {fps:.1f} | Mode: {mode_text}", (20, 135), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(image, f"FPS: {fps:.1f} | Mode: {mode_text}", (20, 100), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
         
         # Keypoints count
         keypoint_text = f"Keypoints: {len(self.tracked_landmarks)}/21"
-        cv2.putText(image, keypoint_text, (20, 160), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(image, keypoint_text, (20, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
         # Bounding box stability indicator
         if self.hand_region and self.avg_hand_size:
@@ -757,8 +706,8 @@ class ASLRecognizer:
             current_size = (w + h) / 2
             stability = min(100, int((1 - abs(current_size - self.avg_hand_size) / self.avg_hand_size) * 100))
             stability_color = (0, 255, 0) if stability > 90 else (0, 165, 255) if stability > 75 else (0, 0, 255)
-            cv2.putText(image, f"Box Stability: {stability}%", (20, 185), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, stability_color, 1)
+            cv2.putText(image, f"Box Stability: {stability}%", (20, 140), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, stability_color, 1)
         
         # Gesture temporal consistency indicator
         if len(self.gesture_history) > 0:
@@ -768,15 +717,17 @@ class ASLRecognizer:
                 most_common = Counter(recent_gestures).most_common(1)[0]
                 consistency = (most_common[1] / len(recent_gestures)) * 100
                 consistency_color = (0, 255, 0) if consistency > 70 else (0, 165, 255) if consistency > 50 else (255, 100, 100)
-                cv2.putText(image, f"Gesture Consistency: {int(consistency)}%", (20, 210), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, consistency_color, 1)
+                cv2.putText(image, f"Gesture Consistency: {int(consistency)}%", (20, 160), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, consistency_color, 1)
         
         return image
     
     def run_live_recognition(self):
         """Run live ASL recognition from webcam"""
-        # Initialize webcam
+        # Initialize webcam with higher resolution for better tracking
         cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         if not cap.isOpened():
             print("Error: Cannot access webcam")
             return

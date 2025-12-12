@@ -1,6 +1,6 @@
 {
-  "model_type": "RandomForest",
-  "accuracy": 0.8665955176093917,
+  "model_type": "SVM",
+  "accuracy": 1.0,
   "feature_count": 63,
   "classes": [
     "A",
